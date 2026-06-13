@@ -28,6 +28,7 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
 
     error_code = str(result.get("error_code", "")).upper()
     message = str(result.get("message", "")).upper()
+    error_msg = str(result.get("error", "")).upper()
 
     if status == "Charged":
         response_str = "CARD_CHARGED"
@@ -43,12 +44,25 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
     elif "THROTTLED" in error_code:
         response_str = "THROTTLED"
     elif status == "Error":
-        if "DECLINED" in message:
+        # Improved error classification
+        combined = f"{message} {error_msg} {error_code}"
+
+        if any(x in combined for x in ["DECLINED", "CARD_DECLINED"]):
             response_str = "CARD_DECLINED"
-        elif "APPROVED" in message or "INSUFFICIENT" in message or "CVC" in message:
+        elif any(x in combined for x in ["APPROVED", "INSUFFICIENT", "CVC"]):
             response_str = "CARD_APPROVED"
+        elif any(x in combined for x in ["NO PRODUCT", "NO AVAILABLE PRODUCT", "PRODUCTS NOT FOUND"]):
+            response_str = "NO_PRODUCTS"
+        elif any(x in combined for x in ["CART ADD FAILED", "CART FAILED", "NO CART TOKEN"]):
+            response_str = "CART_FAILED"
+        elif any(x in combined for x in ["CHECKOUT", "SUBMIT"]):
+            response_str = "CHECKOUT_FAILED"
+        elif any(x in combined for x in ["TIMEOUT", "NETWORK"]):
+            response_str = "NETWORK_TIMEOUT"
+        elif "CAPTCHA" in combined:
+            response_str = "CAPTCHA_REQUIRED"
         else:
-            response_str = error_code or "ERROR"
+            response_str = "ERROR"
     else:
         response_str = error_code or status.upper().replace(" ", "_")
 

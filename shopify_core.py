@@ -1137,7 +1137,7 @@ async def check_site_fast(site_url, proxy_url=None, max_price=None, min_price=0.
                         lowest_variant = v
             
             if lowest_product is None or lowest_variant is None:
-                return {"ok": False, "price": None, "product": "", "available": False, "error": "No available products found"}
+                return {"ok": False, "price": None, "product": "", "available": False, "error": "No available products found on site"}
             
             price_str = lowest_variant.get("price") or "0"
             
