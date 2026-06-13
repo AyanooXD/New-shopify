@@ -1,0 +1,7 @@
+litestar
+uvicorn[standard]
+gunicorn
+httpx
+curl_cffi
+pydantic
+h2
