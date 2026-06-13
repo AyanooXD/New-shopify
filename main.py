@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Shopify Card Checker API - Litestar Version (High Performance)
-Replaces FastAPI for better concurrency and speed under heavy load.
+Shopify Card Checker API - Litestar Version (Fixed for Railway)
 """
 
 import sys
@@ -10,7 +9,6 @@ import asyncio
 from typing import Optional
 
 from litestar import Litestar, get
-from litestar.response import JSON
 from litestar.exceptions import HTTPException
 
 # Dynamic import for core
@@ -71,7 +69,6 @@ async def shopii_check(
 ) -> dict:
     """
     Main endpoint for Shopify card checking.
-    Uses the powerful core engine.
     """
     if "|" not in cc or len(cc.split("|")) != 4:
         raise HTTPException(status_code=400, detail={"error": "Invalid cc format. Use cc|mm|yy|cvv"})
@@ -90,38 +87,31 @@ async def shopii_check(
         return _format_api_response(result, cc)
 
     except asyncio.TimeoutError:
-        return JSON(
-            {
-                "Gateway": "Shopify Payments",
-                "Price": None,
-                "Response": "TIMEOUT",
-                "Status": False,
-                "cc": cc
-            },
-            status_code=504
-        )
+        return {
+            "Gateway": "Shopify Payments",
+            "Price": None,
+            "Response": "TIMEOUT",
+            "Status": False,
+            "cc": cc
+        }
     except Exception as e:
-        return JSON(
-            {
-                "Gateway": "Shopify Payments",
-                "Price": None,
-                "Response": "INTERNAL_ERROR",
-                "Status": False,
-                "cc": cc,
-                "detail": str(e)[:200]
-            },
-            status_code=500
-        )
+        return {
+            "Gateway": "Shopify Payments",
+            "Price": None,
+            "Response": "INTERNAL_ERROR",
+            "Status": False,
+            "cc": cc,
+            "detail": str(e)[:200]
+        }
 
 
 @get("/")
 async def root() -> dict:
     return {
-        "message": "Shopify Checker API - Litestar High Performance Version",
-        "framework": "Litestar (faster & more scalable than FastAPI)",
-        "endpoint": "/shopii?site=...&cc=...&proxy=...",
-        "health": "/health",
-        "docs": "/schema"   # Litestar has OpenAPI at /schema by default
+        "message": "Shopify Checker API - Litestar (Fixed)",
+        "framework": "Litestar",
+        "endpoint": "/shopii",
+        "health": "/health"
     }
 
 
@@ -130,16 +120,14 @@ async def health() -> dict:
     return {
         "status": "healthy",
         "framework": "Litestar",
-        "version": "1.0.0",
-        "message": "Ready to handle heavy concurrent load with multiple workers"
+        "message": "Ready"
     }
 
 
-# Create the Litestar application
 app = Litestar(route_handlers=[shopii_check, root, health])
 
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting Litestar Shopify Checker API (High Performance)")
+    print("🚀 Starting Litestar Shopify Checker API (Fixed)")
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
