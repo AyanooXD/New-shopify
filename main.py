@@ -20,16 +20,26 @@ import shopify_core
 def _format_api_response(result: dict, cc_input: str) -> dict:
     """Map internal result to the expected API response format."""
     status = result.get("status", "Error")
-    price_raw = result.get("price") or result.get("lowest_price") or 0
-    try:
-        price = round(float(str(price_raw).replace("$", "").replace(",", "").strip()), 2)
-    except (ValueError, TypeError):
-        price = None
+
+    # ── Price extraction — try all known fields ──────────────────────────
+    price_raw = (
+        result.get("price")
+        or result.get("lowest_price")
+    )
+    price: float | None = None
+    if price_raw is not None and str(price_raw).strip() not in ("", "-", "None", "null"):
+        try:
+            price = round(float(str(price_raw).replace("$", "").replace(",", "").strip()), 2)
+            if price <= 0:
+                price = None  # never expose 0.00 — it means the product fetch failed
+        except (ValueError, TypeError):
+            price = None
 
     error_code = str(result.get("error_code", "")).upper()
-    message = str(result.get("message", "")).upper()
-    error_msg = str(result.get("error", "")).upper()
+    message    = str(result.get("message", "")).upper()
+    error_msg  = str(result.get("error", "")).upper()
 
+    # ── Response string mapping ───────────────────────────────────────────
     if status == "Charged":
         response_str = "CARD_CHARGED"
     elif status == "Approved":
@@ -44,33 +54,43 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
     elif "THROTTLED" in error_code:
         response_str = "THROTTLED"
     elif status == "Error":
-        # Improved error classification
         combined = f"{message} {error_msg} {error_code}"
 
-        if any(x in combined for x in ["DECLINED", "CARD_DECLINED"]):
+        if any(x in combined for x in ["CARD_DECLINED", "DECLINED"]):
             response_str = "CARD_DECLINED"
-        elif any(x in combined for x in ["APPROVED", "INSUFFICIENT", "CVC"]):
+        elif any(x in combined for x in ["APPROVED", "INSUFFICIENT", "CVC", "INVALID_CVC"]):
             response_str = "CARD_APPROVED"
-        elif any(x in combined for x in ["NO PRODUCT", "NO AVAILABLE PRODUCT", "PRODUCTS NOT FOUND"]):
+        elif any(x in combined for x in ["NO PRODUCT", "NO AVAILABLE PRODUCT", "PRODUCTS NOT FOUND", "NO PRODUCTS"]):
             response_str = "NO_PRODUCTS"
-        elif any(x in combined for x in ["CART ADD FAILED", "CART FAILED", "NO CART TOKEN"]):
+        elif any(x in combined for x in ["CART ADD FAILED", "CART FAILED", "NO CART TOKEN", "CART JSON"]):
             response_str = "CART_FAILED"
-        elif any(x in combined for x in ["CHECKOUT", "SUBMIT"]):
+        elif "CHECKOUT SESSION FAILED" in combined:
+            response_str = "CHECKOUT_SESSION_FAILED"
+        elif any(x in combined for x in ["CHECKOUT", "SUBMIT FAILED", "GRAPHQL"]):
             response_str = "CHECKOUT_FAILED"
-        elif any(x in combined for x in ["TIMEOUT", "NETWORK"]):
+        elif any(x in combined for x in ["TIMEOUT", "NETWORK", "CONNECT"]):
             response_str = "NETWORK_TIMEOUT"
         elif "CAPTCHA" in combined:
             response_str = "CAPTCHA_REQUIRED"
+        elif "PAYMENT SESSION" in combined:
+            response_str = "PAYMENT_SESSION_FAILED"
         else:
-            response_str = "ERROR"
+            # Show actual reason instead of generic ERROR
+            actual = (
+                result.get("message")
+                or result.get("error")
+                or result.get("error_code")
+                or "UNKNOWN_ERROR"
+            )
+            response_str = str(actual).strip()[:120]
     else:
         response_str = error_code or status.upper().replace(" ", "_")
 
     return {
         "Gateway": "Shopify Payments",
-        "Price": price,
+        "Price": price,          # None if unknown — never 0.00
         "Response": response_str,
-        "Status": True,
+        "Status": status in ("Charged", "Approved", "Declined"),
         "cc": cc_input
     }
 

