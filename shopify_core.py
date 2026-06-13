@@ -1064,11 +1064,11 @@ async def main():
             print(f"❌ An error occurred in main: {e}")
 
 
-async def check_site_fast(site_url, proxy_url=None, max_price=40.0, min_price=10.0):
+async def check_site_fast(site_url, proxy_url=None, max_price=None, min_price=0.0):
     """
-    Fast site check: only GET products.json. Returns dict with ok, price, product, available.
-    Use when adding sites (no full checkout). ~1 request, ~1–2 sec.
-    Finds the LOWEST priced available product (excluding free/very cheap items).
+    Fast site check: only GET products.json.
+    Finds the LOWEST priced available product on the site (skips free items with price 0).
+    No strict price range filter anymore.
     """
     site_url = site_url.strip().rstrip("/")
     fingerprint = get_random_fingerprint()
@@ -1127,8 +1127,8 @@ async def check_site_fast(site_url, proxy_url=None, max_price=40.0, min_price=10
                     except (ValueError, TypeError):
                         continue
                     
-                    # Skip free or very cheap products (less than min_price)
-                    if price_val < min_price:
+                    # Skip completely free products (price == 0)
+                    if price_val <= 0:
                         continue
                     
                     if lowest_price is None or price_val < lowest_price:
@@ -1137,21 +1137,18 @@ async def check_site_fast(site_url, proxy_url=None, max_price=40.0, min_price=10
                         lowest_variant = v
             
             if lowest_product is None or lowest_variant is None:
-                return {"ok": False, "price": None, "product": "", "available": False, "error": f"No products between ${min_price:.2f}-${max_price:.2f}"}
+                return {"ok": False, "price": None, "product": "", "available": False, "error": "No available products found"}
             
             price_str = lowest_variant.get("price") or "0"
-            ok = lowest_price <= max_price
             
-            # Return detailed info including why it might fail
+            # Return the lowest priced available product (no strict range)
             result = {
-                "ok": ok, 
+                "ok": True, 
                 "price": price_str, 
                 "product": lowest_product.get("title", "")[:60], 
                 "available": True,
                 "lowest_price": lowest_price
             }
-            if not ok:
-                result["error"] = f"Price ${lowest_price:.2f} exceeds max ${max_price:.2f}"
             return result
     except _NETWORK_ERRORS as e:
         _ename = type(e).__name__
@@ -1495,8 +1492,8 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                 except (ValueError, TypeError):
                     continue
                 
-                # Skip products outside $10–$40 range
-                if price_val < 10.0 or price_val > 40.0:
+                # Skip free products (price == 0)
+                if price_val <= 0:
                     continue
                 
                 if lowest_price is None or price_val < lowest_price:
@@ -1505,7 +1502,7 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                     lowest_variant = v
         
         if lowest_product is None or lowest_variant is None:
-            return {"status": "Error", "message": "No available products in price range", "debug_steps": _steps}
+            return {"status": "Error", "message": "No available products found on site", "debug_steps": _steps}
         
         product_handle = lowest_product["handle"]
         variant_id = lowest_variant["id"]
