@@ -2042,6 +2042,7 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                 "PAYMENTS_CREDIT_CARD_BASE_INSUFFICIENT_FUNDS",
                 "PAYMENTS_CREDIT_CARD_BASE_INVALID_CVC",
                 "PAYMENTS_CREDIT_CARD_BASE_EXPIRED",
+                "PAYMENTS_CREDIT_CARD_BASE_INCORRECT_CVC",  # FIX: was falling into decline_hits via startswith() check
             }
             # Gateway decline codes = card rejected by processor → Declined
             _decline_codes = {

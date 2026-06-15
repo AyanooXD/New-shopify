@@ -48,6 +48,7 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
         "PAYMENTS_CREDIT_CARD_BASE_INSUFFICIENT_FUNDS",
         "PAYMENTS_CREDIT_CARD_BASE_INVALID_CVC",
         "PAYMENTS_CREDIT_CARD_BASE_EXPIRED",
+        "PAYMENTS_CREDIT_CARD_BASE_INCORRECT_CVC",  # FIX: was missing, causing it to fall through
     }
 
     # ── Response string mapping ───────────────────────────────────────────
@@ -116,13 +117,25 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
         # unknown status values, which never happen in practice).
         response_str = error_code or status.upper().replace(" ", "_")
 
-    # BUG FIX #4: "Status" field was bool (True/False) — semantically confusing.
-    # Now returns "Charged"/"Approved"/"Declined"/"Error" string AND the bool for backwards compat.
+    # Status=True means the card was actually processed by the payment gateway.
+    # INSUFFICIENT_FUNDS, INVALID_CVC, INCORRECT_CVC, 3DS_REQUIRED = gateway processed = True
+    # These come from shopify_core as status="Error" but are gateway responses, not site errors.
+    _gateway_processed_responses = {
+        "CARD_CHARGED", "CARD_APPROVED", "3DS_REQUIRED",
+        "INSUFFICIENT_FUNDS", "INVALID_CVC", "INCORRECT_CVC", "EXPIRED_CARD",
+        "PAYMENTS_CREDIT_CARD_BASE_INSUFFICIENT_FUNDS", "PAYMENTS_CREDIT_CARD_BASE_INVALID_CVC",
+        "PAYMENTS_CREDIT_CARD_BASE_EXPIRED", "PAYMENTS_CREDIT_CARD_BASE_INCORRECT_CVC",
+        "CARD_DECLINED",
+    }
+    is_gateway_processed = (
+        status in ("Charged", "Approved", "Declined")
+        or response_str in _gateway_processed_responses
+    )
     return {
         "Gateway": "Shopify Payments",
         "Price": price,          # None if unknown — never 0.00
         "Response": response_str,
-        "Status": status in ("Charged", "Approved", "Declined"),
+        "Status": is_gateway_processed,
         "cc": cc_input
     }
 
