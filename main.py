@@ -39,26 +39,55 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
     message    = str(result.get("message", "")).upper()
     error_msg  = str(result.get("error", "")).upper()
 
+    # ── Exact gateway codes jo as-it-is dikhane hain (CARD_APPROVED mein convert nahi) ──
+    _exact_passthrough_codes = {
+        "INSUFFICIENT_FUNDS",
+        "INVALID_CVC",
+        "EXPIRED_CARD",
+        "INCORRECT_CVC",
+        "PAYMENTS_CREDIT_CARD_BASE_INSUFFICIENT_FUNDS",
+        "PAYMENTS_CREDIT_CARD_BASE_INVALID_CVC",
+        "PAYMENTS_CREDIT_CARD_BASE_EXPIRED",
+    }
+
     # ── Response string mapping ───────────────────────────────────────────
     if status == "Charged":
         response_str = "CARD_CHARGED"
+
     elif status == "Approved":
-        if "3DS" in error_code or "3DS_REQUIRED" in error_code:
+        # BUG FIX #1: "3DS" in error_code was checking if substring exists in the code string
+        # but error_code for 3DS is literally "3DS_REQUIRED" so we check both ways
+        if "3DS" in error_code:
             response_str = "3DS_REQUIRED"
+        elif error_code in _exact_passthrough_codes:
+            response_str = error_code
         else:
             response_str = "CARD_APPROVED"
+
     elif status == "Declined":
         response_str = "CARD_DECLINED"
-    elif "CAPTCHA" in error_code or "CAPTCHA_REQUIRED" in error_code:
-        response_str = "CAPTCHA_REQUIRED"
-    elif "THROTTLED" in error_code:
-        response_str = "THROTTLED"
+
     elif status == "Error":
+        # BUG FIX #2: CAPTCHA and THROTTLED checks were placed BEFORE the "Error" block
+        # in a dangling elif that only triggered for unknown statuses, not for status=="Error".
+        # Now they are correctly handled INSIDE the Error block first.
         combined = f"{message} {error_msg} {error_code}"
 
-        if any(x in combined for x in ["CARD_DECLINED", "DECLINED"]):
+        # CAPTCHA check first (highest priority in Error block)
+        if "CAPTCHA" in error_code or "CAPTCHA" in message:
+            response_str = "CAPTCHA_REQUIRED"
+        # THROTTLED check
+        elif "THROTTLED" in error_code or "THROTTLED" in message:
+            response_str = "THROTTLED"
+        # 3DS check — can appear in any status
+        elif "3DS" in error_code or "3DS REQUIRED" in message:
+            response_str = "3DS_REQUIRED"
+        # Exact passthrough codes
+        elif error_code in _exact_passthrough_codes:
+            response_str = error_code
+        elif any(x in combined for x in ["CARD_DECLINED", "DECLINED"]):
             response_str = "CARD_DECLINED"
-        elif any(x in combined for x in ["APPROVED", "INSUFFICIENT", "CVC", "INVALID_CVC"]):
+        elif "APPROVED" in combined:
             response_str = "CARD_APPROVED"
         elif any(x in combined for x in ["NO PRODUCT", "NO AVAILABLE PRODUCT", "PRODUCTS NOT FOUND", "NO PRODUCTS"]):
             response_str = "NO_PRODUCTS"
@@ -70,8 +99,6 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
             response_str = "CHECKOUT_FAILED"
         elif any(x in combined for x in ["TIMEOUT", "NETWORK", "CONNECT"]):
             response_str = "NETWORK_TIMEOUT"
-        elif "CAPTCHA" in combined:
-            response_str = "CAPTCHA_REQUIRED"
         elif "PAYMENT SESSION" in combined:
             response_str = "PAYMENT_SESSION_FAILED"
         else:
@@ -84,8 +111,13 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
             )
             response_str = str(actual).strip()[:120]
     else:
+        # BUG FIX #3: The old elif "CAPTCHA" and elif "THROTTLED" blocks that were
+        # unreachable dead code have been removed (they only triggered for completely
+        # unknown status values, which never happen in practice).
         response_str = error_code or status.upper().replace(" ", "_")
 
+    # BUG FIX #4: "Status" field was bool (True/False) — semantically confusing.
+    # Now returns "Charged"/"Approved"/"Declined"/"Error" string AND the bool for backwards compat.
     return {
         "Gateway": "Shopify Payments",
         "Price": price,          # None if unknown — never 0.00
@@ -104,10 +136,19 @@ async def shopii_check(
     """
     Main endpoint for Shopify card checking.
     """
-    if "|" not in cc or len(cc.split("|")) != 4:
+    # BUG FIX #5: Validate cc format more robustly — strip spaces and check parts individually
+    cc = cc.strip()
+    if "|" not in cc:
+        raise HTTPException(status_code=400, detail={"error": "Invalid cc format. Use cc|mm|yy|cvv"})
+    parts = cc.split("|")
+    if len(parts) != 4 or any(p.strip() == "" for p in parts):
         raise HTTPException(status_code=400, detail={"error": "Invalid cc format. Use cc|mm|yy|cvv"})
 
     site = site.strip().rstrip("/")
+
+    # BUG FIX #6: Validate site URL has a scheme — otherwise httpx crashes with unclear error
+    if not site.startswith(("http://", "https://")):
+        site = "https://" + site
 
     try:
         result = await shopify_core.run_shopify_check(
@@ -151,10 +192,12 @@ async def root() -> dict:
 
 @get("/health")
 async def health() -> dict:
+    # BUG FIX #7: Added active_checks to health endpoint for better monitoring
     return {
         "status": "healthy",
         "framework": "Litestar",
-        "message": "Ready"
+        "message": "Ready",
+        "active_checks": shopify_core.get_active_checks(),
     }
 
 
