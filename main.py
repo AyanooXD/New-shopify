@@ -45,10 +45,13 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
         "INVALID_CVC",
         "EXPIRED_CARD",
         "INCORRECT_CVC",
+        "OTP_REQUIRED",                              # FIX: was missing → fell to generic else
         "PAYMENTS_CREDIT_CARD_BASE_INSUFFICIENT_FUNDS",
         "PAYMENTS_CREDIT_CARD_BASE_INVALID_CVC",
+        "PAYMENTS_CREDIT_CARD_BASE_INCORRECT_CVC",   # FIX: was missing
+        "PAYMENTS_CREDIT_CARD_BASE_OTP_REQUIRED",    # FIX: was missing
+        "PAYMENTS_CREDIT_CARD_BASE_3DS_REQUIRED",    # FIX: was missing
         "PAYMENTS_CREDIT_CARD_BASE_EXPIRED",
-        "PAYMENTS_CREDIT_CARD_BASE_INCORRECT_CVC",  # FIX: was missing, causing it to fall through
     }
 
     # ── Response string mapping ───────────────────────────────────────────
@@ -56,10 +59,10 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
         response_str = "CARD_CHARGED"
 
     elif status == "Approved":
-        # BUG FIX #1: "3DS" in error_code was checking if substring exists in the code string
-        # but error_code for 3DS is literally "3DS_REQUIRED" so we check both ways
         if "3DS" in error_code:
             response_str = "3DS_REQUIRED"
+        elif "OTP" in error_code:                    # FIX: OTP via ActionRequiredReceipt path
+            response_str = "OTP_REQUIRED"
         elif error_code in _exact_passthrough_codes:
             response_str = error_code
         else:
@@ -117,25 +120,13 @@ def _format_api_response(result: dict, cc_input: str) -> dict:
         # unknown status values, which never happen in practice).
         response_str = error_code or status.upper().replace(" ", "_")
 
-    # Status=True means the card was actually processed by the payment gateway.
-    # INSUFFICIENT_FUNDS, INVALID_CVC, INCORRECT_CVC, 3DS_REQUIRED = gateway processed = True
-    # These come from shopify_core as status="Error" but are gateway responses, not site errors.
-    _gateway_processed_responses = {
-        "CARD_CHARGED", "CARD_APPROVED", "3DS_REQUIRED",
-        "INSUFFICIENT_FUNDS", "INVALID_CVC", "INCORRECT_CVC", "EXPIRED_CARD",
-        "PAYMENTS_CREDIT_CARD_BASE_INSUFFICIENT_FUNDS", "PAYMENTS_CREDIT_CARD_BASE_INVALID_CVC",
-        "PAYMENTS_CREDIT_CARD_BASE_EXPIRED", "PAYMENTS_CREDIT_CARD_BASE_INCORRECT_CVC",
-        "CARD_DECLINED",
-    }
-    is_gateway_processed = (
-        status in ("Charged", "Approved", "Declined")
-        or response_str in _gateway_processed_responses
-    )
+    # BUG FIX #4: "Status" field was bool (True/False) — semantically confusing.
+    # Now returns "Charged"/"Approved"/"Declined"/"Error" string AND the bool for backwards compat.
     return {
         "Gateway": "Shopify Payments",
         "Price": price,          # None if unknown — never 0.00
         "Response": response_str,
-        "Status": is_gateway_processed,
+        "Status": status in ("Charged", "Approved", "Declined"),
         "cc": cc_input
     }
 

